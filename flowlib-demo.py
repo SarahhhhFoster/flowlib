@@ -1,43 +1,56 @@
 import flowlib
 import asyncio
 
-# Define the APIs
-xkcd_api = flowlib.API(
-    base_url="https://xkcd.com/{id}/info.0.json",
-    input_params={"id": flowlib.URLParam()},
-    output_params={"title": "$.safe_title"},
-    error_handlers={404: (lambda res: {"title": ["No title found"]})}
-)
+# Define error handler for 404
+def xkcd_404(response):
+    return {"title": ["No title found"]}
 
-dictionary_api = flowlib.API(
-    base_url="https://api.dictionaryapi.dev/api/v2/entries/en/{word}",
-    input_params={"word": flowlib.URLParam()},
-    output_params={"definition": "$..meanings[*].definitions[*].definition"},
-    error_handlers={404: (lambda res: {"title": ["No definition found"]})}
-)
+def dictionary_404(response):
+    return {"definition": ["No definition found"]}
 
-def xkcd_to_dictionary(xkcd_response):
-    title = xkcd_response.get("title", "")
+def xkcd_to_dictionary(outputs):
+    title = outputs.get("title")[0]
     words = title.split()
     first_word = words[0].lower() if words else ""
-    return [{"word": first_word}]
+    return {"word": first_word}
 
-# Create a flow with an API linkage
-flow = flowlib.APIFlow([flowlib.APILinkage(xkcd_api, dictionary_api, xkcd_to_dictionary)])
+# Define the APIs as nodes
+xkcd_node = flowlib.APINode(
+    id="xkcd_api",
+    base_url="https://xkcd.com/{id}/info.0.json",
+    input_params={"id": flowlib.URLParam("id")},
+    output_params={"title": "$.safe_title"},
+    error_handlers={404: xkcd_404},
+    linkage_function=xkcd_to_dictionary
+)
 
+dictionary_node = flowlib.APINode(
+    id="dictionary_api",
+    base_url="https://api.dictionaryapi.dev/api/v2/entries/en/{word}",
+    input_params={"word": flowlib.URLParam("word")},
+    output_params={"definition": "$..meanings[*].definitions[*].definition"},
+    error_handlers={404: dictionary_404}
+)
+
+# Define edges
+edge = flowlib.Edge(source="xkcd_api", target="dictionary_api")
+
+# Define the flow
+flow = flowlib.APIFlow(nodes=[xkcd_node, dictionary_node], edges=[edge])
+
+# Define callback
 def callback(results):
-    comic_data = results.get(xkcd_api.base_url, {})
-    dictionary_data = results.get(dictionary_api.base_url, {})
-
-    comic_title = comic_data['output'].get('title', ["Unknown Title"])[0]  # Make sure it's a list, taking the first element
+    comic_data = results.get("xkcd_api", {})
+    dictionary_data = results.get("dictionary_api", {})
+    comic_title = comic_data['output'].get('title', ["Unknown Title"])[0]
     first_word = dictionary_data['input'].get('word', "Unknown Word")
     definitions = dictionary_data['output'].get('definition', [])
-    if not isinstance(definitions, list):  # Ensure definitions is a list
+    if not isinstance(definitions, list):
         definitions = [definitions]
 
     if len(definitions) == 0:
         print(f"Comic #{comic_data['input']['id']} titled '{comic_title}' has its first word '{first_word}' undefined.")
-    else:    
+    else:
         print(f"Comic #{comic_data['input']['id']} titled '{comic_title}' has its first word '{first_word}' defined as:")
         for definition in definitions:
             print("\t" + definition)
@@ -48,10 +61,10 @@ getter = flowlib.Getter(max_retries=3, workers=10)
 # List of comic IDs to fetch in parallel
 comic_ids = range(2630,2650)
 
-# Define a main coroutine that will gather all tasks
+# Define a main coroutine
 async def main():
-    tasks = [getter.run_flow(flow, {"id": comic_id}, callback) for comic_id in comic_ids]
+    tasks = [getter.run_flow(flow, {"id": str(comic_id)}, callback) for comic_id in comic_ids]
     await asyncio.gather(*tasks)
 
-# Run the main coroutine
+# Execute the main coroutine
 asyncio.run(main())

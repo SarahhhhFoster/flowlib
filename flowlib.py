@@ -1,61 +1,92 @@
 import aiohttp
 import asyncio
 import logging
+import networkx as nx
 from jsonpath_ng import parse
-from typing import Optional, Dict, List, Callable, Union, Any
-from dataclasses import dataclass
+from typing import Optional, Dict, List, Callable, Union, Any, Type
+from dataclasses import dataclass, field
 
 logging.basicConfig(level=logging.INFO)
 
-# Define a data class to represent a URL parameter
 @dataclass
 class URLParam:
-    pass
+    value: str
 
-# Define a data class to represent a data parameter
 @dataclass
 class DataParam:
-    pass
+    value: str
 
-# Define a data class to represent an API with its details
 @dataclass
-class API:
+class APINode:
+    id: str
     base_url: str
     method: str = "GET"
     input_params: Optional[Dict[str, Union[URLParam, DataParam]]] = None
     output_params: Optional[Dict[str, str]] = None
     credentials: Optional[Dict[str, Dict[str, str]]] = None
     error_handlers: Optional[Dict[int, Callable]] = None
-    data_template: Optional[Dict[str, Any]] = None  # Template for the request body
+    linkage_function: Callable = lambda input: input
+    data_template: Optional[Dict[str, Any]] = field(default_factory=dict)
 
-    # Set default values for the data class attributes if they are not provided
     def __post_init__(self):
         self.input_params = self.input_params or {}
         self.output_params = self.output_params or {}
         self.credentials = self.credentials or {}
         self.error_handlers = self.error_handlers or {}
-        self.data_template = self.data_template or {}
 
-    # Build and return the full URL by substituting the given parameters into the base URL
-    def build_url(self, url_params: Dict[str, str]) -> str:
-        return self.base_url.format(**url_params)
+    def build_url(self, params: Dict[str, str]) -> str:
+        return self.base_url.format(**params)
 
-# Define a data class to represent a linkage between two APIs
 @dataclass
-class APILinkage:
-    start_api: API
-    end_api: API
-    linkage_function: Callable  # Function to map the output of the start_api to the input of the end_api
-
-# Define a class to represent an intermerdiate Python processing step
-@dataclass
-class PythonLinkage:
+class PythonNode:
+    id: str
     function: Callable
 
-# Define a data class to represent a flow of linked APIs
+Node = Union[APINode, PythonNode]
+
 @dataclass
+class Edge:
+    source: str  # id of the source node
+    target: str  # id of the target node
+
 class APIFlow:
-    linkages: List[Union[APILinkage, PythonLinkage]]
+    def __init__(self, nodes: List[Node], edges: List[Edge]):
+        self.nodes = nodes
+        self.edges = edges
+
+    def get_node(self, node_id: str) -> Optional[Node]:
+        """
+        Retrieves a node by its ID.
+        """
+        for node in self.nodes:
+            if node.id == node_id:
+                return node
+        return None
+
+    def get_children(self, node_id: str) -> List[str]:
+        """
+        Retrieves the IDs of child nodes of a given node.
+        """
+        return [edge.target for edge in self.edges if edge.source == node_id]
+
+    def get_starting_node(self) -> Optional[Node]:
+        """
+        Gets the starting node in the flow. This is determined by the node that has no incoming edges.
+        Returns the starting node or None if no starting node could be determined.
+        """
+        G = nx.DiGraph()
+        for edge in self.edges:
+            G.add_edge(edge.source, edge.target)
+
+        starting_nodes = [node for node, indegree in G.in_degree() if indegree == 0]
+
+        if len(starting_nodes) == 1:
+            return self.get_node(starting_nodes[0])
+        elif len(starting_nodes) == 0:
+            raise ValueError("No starting node found. The flow might have a cycle.")
+        else:
+            raise ValueError("Multiple potential starting nodes detected. Please ensure a single entry point for the flow.")
+
 
 # Define a class to manage asynchronous API requests
 class Getter:
@@ -70,46 +101,42 @@ class Getter:
         if not template:
             return params
 
-        populated = {}
-        for key, value in template.items():
-            if isinstance(value, dict):
-                populated[key] = self.populate_template(value, params)
-            else:
-                populated[key] = params.get(key, value)
-        return populated
+        populated_data = template.copy()
+        for key, param in params.items():
+            populated_data[key] = param
+        return populated_data
 
-    async def fetch(self, session: aiohttp.ClientSession, api: API, params: Dict[str, str]) -> Dict[str, Any]:
-        # Fetch the API response asynchronously
-        cache_key = (api.base_url, frozenset(params.items()))
+    async def fetch(self, session: aiohttp.ClientSession, node: APINode, params: Dict[str, str]) -> Dict[str, Any]:
+        cache_key = (node.base_url, frozenset(params.items()))
         if cache_key in self.cache:
             return self.cache[cache_key]
 
         # Separate parameters based on their type
-        url_parameters = {k: v for k, v in params.items() if isinstance(api.input_params.get(k), URLParam)}
-        data_parameters = {k: v for k, v in params.items() if isinstance(api.input_params.get(k), DataParam)}
+        url_parameters = {k: v for k, v in params.items() if isinstance(node.input_params.get(k), URLParam)}
+        data_parameters = {k: v for k, v in params.items() if isinstance(node.input_params.get(k), DataParam)}
 
-        url = api.build_url(url_parameters)
-        populated_data = self.populate_template(api.data_template, data_parameters)
+        url = node.build_url(params)
+        populated_data = self.populate_template(node.data_template, data_parameters)
         
-        response = await session.request(
-            method=api.method, 
-            url=url, 
-            headers=api.credentials.get('headers'), 
-            cookies=api.credentials.get('cookies'),
-            json=populated_data  # Use the populated data template as the JSON body
-        )
+        # Populate the data template
+        if node.method in ["POST", "PUT", "PATCH"]:
+            data_parameters = {k: v.value for k, v in node.input_params.items() if isinstance(v, DataParam)}
+            populated_data = self.populate_template(node.data_template, data_parameters)
+            response = await session.request(method=node.method, url=url, json=populated_data, headers=node.credentials.get('headers'), cookies=node.credentials.get('cookies'))
+        else:
+            response = await session.request(method=node.method, url=url, headers=node.credentials.get('headers'), cookies=node.credentials.get('cookies'))
 
         outputs = {}
         if response.status == 200:
             response_json = await response.json()
-            for param_name, jsonpath_expr in api.output_params.items():
+            for param_name, jsonpath_expr in node.output_params.items():
                 # Use jsonpath to extract specific values from the JSON response
                 expr = parse(jsonpath_expr)
                 matches = [match.value for match in expr.find(response_json)]
                 outputs[param_name] = matches or None
         else:
             # Handle response errors
-            error_handler = api.error_handlers.get(response.status)
+            error_handler = node.error_handlers.get(response.status)
             if error_handler:
                 outputs = error_handler(response)
             else:
@@ -121,56 +148,74 @@ class Getter:
         self.cache[cache_key] = result
         return result
 
-    async def fetch_with_retry(self, session: aiohttp.ClientSession, api: API, params: Dict[str, str]) -> Dict[str, Any]:
-        # Fetch the API response with retries in case of failures
+    async def fetch_with_retry(self, session: aiohttp.ClientSession, node: APINode, params: Dict[str, str]) -> Dict[str, Any]:
         async with self.semaphore:
             for retry in range(self.max_retries):
                 try:
-                    return await self.fetch(session, api, params)
+                    return await self.fetch(session, node, params)
                 except aiohttp.ClientResponseError as e:
-                    logging.info(f"Request to {api.base_url} failed with status code: {e.status}. Retrying...")
+                    logging.info(f"Request to {node.base_url} failed with status code: {e.status}. Retrying...")
                     await asyncio.sleep(2**retry)  # Exponential backoff
-            logging.error(f"Failed to fetch data after {self.max_retries} retries for API {api.base_url}")
+            logging.error(f"Failed to fetch data after {self.max_retries} retries for node {node.id}")
             return {}
 
     async def run_flow(self, flow: APIFlow, start_params: Dict[str, str], callback: Callable):
-        # Execute the entire API flow
         async with aiohttp.ClientSession() as session:
-            results = {}  # Moved outside the process_linkage to hold results across linkages
+            node_mapping = {node.id: node for node in flow.nodes}
+            results = {}
 
-            async def process_linkage(linkage: Union[APILinkage, PythonLinkage], params: Dict[str, str]) -> Dict[str, Any]:
-                # Process an individual linkage in the flow
+            async def process_node(node: Node, params: Dict[str, str]) -> Dict[str, Any]:
+                response = {}
+                
+                if isinstance(node, APINode):  # If this is an APINode
+                    # Fetch the response for this node using the provided params
+                    response = await self.fetch(session, node, params)
+                    output_data = response['output']
+                    # Use the node's linkage function to determine the parameters for subsequent calls
+                    linkage_params = node.linkage_function(output_data)
+                    if not linkage_params:
+                        return response  # No linkage means we're done for this branch
+                    
+                elif isinstance(node, PythonNode):  # If this is a PythonNode
+                    output_data = node.function(params)
+                    linkage_params = [{"result": output_data}]  # Wrap in a list for uniform processing
+                
+                else:
+                    raise ValueError(f"Unknown node type: {type(node)}")
 
-                if isinstance(linkage, APILinkage):
-                    start_response = await self.fetch_with_retry(session, linkage.start_api, params)
-                    results[linkage.start_api.base_url] = start_response
+                # The expected structure of linkage_params is a dictionary. However, for multiple subsequent calls,
+                # it can be a list of dictionaries. Convert a single dictionary into a list for uniformity.
+                if isinstance(linkage_params, dict):
+                    linkage_params = [linkage_params]
 
-                    outputs = start_response['output']
-                    for key, values in outputs.items():
-                        if not isinstance(values, list):
-                            values = [values]
+                combined_responses = {node.id: response}
 
-                        for value in values:
-                            output_data = {key: value}
-                            end_params_list = linkage.linkage_function(output_data)
-                            end_responses = await asyncio.gather(
-                                *[self.fetch_with_retry(session, linkage.end_api, end_params) for end_params in end_params_list]
-                            )
-                            for end_response in end_responses:
-                                results[linkage.end_api.base_url] = end_response
-                                callback(results)
+                # Process children nodes recursively
+                for end_params in linkage_params:
+                    for child_node_id in flow.get_children(node.id):
+                        child_node = flow.get_node(child_node_id)
+                        child_response = await process_node(child_node, end_params)
+                        
+                        # Combine the response of the child node
+                        combined_responses.update(child_response)
 
-                elif isinstance(linkage, PythonLinkage):
-                    # Here we apply the function to transform/filter the results
-                    transformed_results = linkage.function(results)
-                    results.update(transformed_results)
-                    callback(results)
+                # Invoke the callback
+                return combined_responses
 
-                return results
+            # Create the DAG and ensure it's acyclic
+            G = nx.DiGraph()
+            for edge in flow.edges:
+                G.add_edge(edge.source, edge.target)
 
-            tasks = [process_linkage(linkage, start_params) for linkage in flow.linkages]
-            await asyncio.gather(*tasks)
+            if not nx.is_directed_acyclic_graph(G):
+                raise ValueError("The API flow contains cycles and is not a valid DAG.")
+
+            # Identify the starting node and initiate the flow
+            starting_node = flow.get_starting_node()
+            if not starting_node:
+                raise ValueError("No starting node detected in the flow.")
+            combined_responses = await process_node(node_mapping[starting_node.id], start_params)
+            callback(combined_responses)
 
     def run(self, flow: APIFlow, start_params: Dict[str, str], callback: Callable):
-        # Wrapper to run the API flow
         asyncio.run(self.run_flow(flow, start_params, callback))
