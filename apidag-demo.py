@@ -1,4 +1,4 @@
-import flowlib
+from src import apidag
 import asyncio
 
 # Define error handler for 404
@@ -15,28 +15,28 @@ def xkcd_to_dictionary(outputs):
     return {"word": first_word}
 
 # Define the APIs as nodes
-xkcd_node = flowlib.APINode(
+xkcd_node = apidag.APINode(
     id="xkcd_api",
     base_url="https://xkcd.com/{id}/info.0.json",
-    input_params={"id": flowlib.URLParam("id")},
+    input_params={"id": apidag.URLParam("id")},
     output_params={"title": "$.safe_title"},
     error_handlers={404: xkcd_404},
     linkage_function=xkcd_to_dictionary
 )
 
-dictionary_node = flowlib.APINode(
+dictionary_node = apidag.APINode(
     id="dictionary_api",
     base_url="https://api.dictionaryapi.dev/api/v2/entries/en/{word}",
-    input_params={"word": flowlib.URLParam("word")},
+    input_params={"word": apidag.URLParam("word")},
     output_params={"definition": "$..meanings[*].definitions[*].definition"},
     error_handlers={404: dictionary_404}
 )
 
 # Define edges
-edge = flowlib.Edge(source="xkcd_api", target="dictionary_api")
+edge = apidag.Edge(source="xkcd_api", target="dictionary_api")
 
 # Define the flow
-flow = flowlib.APIFlow(nodes=[xkcd_node, dictionary_node], edges=[edge])
+flow = apidag.APIFlow(nodes=[xkcd_node, dictionary_node], edges=[edge])
 
 # Define callback
 def callback(results):
@@ -56,7 +56,7 @@ def callback(results):
             print("\t" + definition)
 
 # Initialize the getter
-getter = flowlib.Getter(max_retries=3, workers=10)
+getter = apidag.Getter(max_retries=3, workers=10)
 
 # List of comic IDs to fetch in parallel
 comic_ids = range(2630,2650)
