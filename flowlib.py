@@ -2,7 +2,6 @@ import aiohttp
 import asyncio
 import logging
 import networkx as nx
-import inspect
 from jsonpath_ng import parse
 from typing import Optional, Dict, List, Callable, Union, Any, Type
 from dataclasses import dataclass, field
