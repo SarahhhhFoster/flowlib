@@ -8,9 +8,14 @@ description = "A Python library using asyncio and aiohttp to build declarative A
 readme = "README.md"
 requires-python = ">=3.7"
 classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  'aiohttp >= 3.8.4, < 4',
+  'jsonpath_ng >= 1.6.0, < 2',
+  'networkx >= 3.0rc1, < 4',
 ]
 
 [project.urls]
