@@ -1,4 +1,4 @@
-from src import apidag
+import apidag
 import asyncio
 
 # Define error handler for 404
