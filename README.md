@@ -1,6 +1,6 @@
-![apidag logo](img/apidag.png)
+***![apidag logo](img/apidag.png)***
 
-# apidag
+<h1 style="text-align: center;">apidag</h1>
 
 A Python library using asyncio and aiohttp to build declarative API call flows. Designed for minimal repetition of definitions, modularity, and reusability, flowlib allows chaining of APIs, alongside formatting functions, in a directed acyclic graph. API definitions are defined as nodes of a graph, with their key elements (such as base URL, input and output parameters, and error handling) as attributes:
 
