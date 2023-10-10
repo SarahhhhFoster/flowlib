@@ -1,4 +1,4 @@
-***![apidag logo](img/apidag.png)***
+<img style="display: block; margin-left: auto; margin-right: auto; width: 30%;" src="img/apidag.png" alt="apidag logo" />
 
 <h1 style="text-align: center;">apidag</h1>
 
