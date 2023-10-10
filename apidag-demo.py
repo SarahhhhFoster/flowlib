@@ -1,18 +1,5 @@
-import apidag
+from src import apidag
 import asyncio
-
-# Define error handler for 404
-def xkcd_404(response):
-    return {"title": ["No title found"]}
-
-def dictionary_404(response):
-    return {"definition": ["No definition found"]}
-
-def xkcd_to_dictionary(outputs):
-    title = outputs.get("title")[0]
-    words = title.split()
-    first_word = words[0].lower() if words else ""
-    return {"word": first_word}
 
 # Define the APIs as nodes
 xkcd_node = apidag.APINode(
@@ -20,8 +7,7 @@ xkcd_node = apidag.APINode(
     base_url="https://xkcd.com/{id}/info.0.json",
     input_params={"id": apidag.URLParam("id")},
     output_params={"title": "$.safe_title"},
-    error_handlers={404: xkcd_404},
-    linkage_function=xkcd_to_dictionary
+    error_handlers={404: lambda input: {"title": ["No title found"]}},
 )
 
 dictionary_node = apidag.APINode(
@@ -29,11 +15,17 @@ dictionary_node = apidag.APINode(
     base_url="https://api.dictionaryapi.dev/api/v2/entries/en/{word}",
     input_params={"word": apidag.URLParam("word")},
     output_params={"definition": "$..meanings[*].definitions[*].definition"},
-    error_handlers={404: dictionary_404}
+    error_handlers={404: lambda input: {"definition": ["No definition found"]}}
 )
 
 # Define edges
-edge = apidag.Edge(source="xkcd_api", target="dictionary_api")
+def xkcd_to_dictionary(outputs):
+    title = outputs.get("title")[0]
+    words = title.split()
+    first_word = words[0].lower() if words else ""
+    return {"word": first_word}
+
+edge = apidag.Edge(source="xkcd_api", target="dictionary_api", linkage_function=xkcd_to_dictionary)
 
 # Define the flow
 flow = apidag.APIFlow(nodes=[xkcd_node, dictionary_node], edges=[edge])

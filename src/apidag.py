@@ -25,7 +25,6 @@ class APINode:
     output_params: Optional[Dict[str, str]] = None
     credentials: Optional[Dict[str, Dict[str, str]]] = None
     error_handlers: Optional[Dict[int, Callable]] = None
-    linkage_function: Callable = lambda input: input
     data_template: Optional[Dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -48,6 +47,7 @@ Node = Union[APINode, PythonNode]
 class Edge:
     source: str  # id of the source node
     target: str  # id of the target node
+    linkage_function: Callable = lambda input: input
 
 class APIFlow:
     def __init__(self, nodes: List[Node], edges: List[Edge]):
@@ -107,7 +107,8 @@ class Getter:
         return populated_data
 
     async def fetch(self, session: aiohttp.ClientSession, node: APINode, params: Dict[str, str]) -> Dict[str, Any]:
-        cache_key = (node.base_url, frozenset(params.items()))
+        hashable_params = {k: tuple(v) if isinstance(v, list) else v for k, v in params.items()}
+        cache_key = (node.base_url, frozenset(hashable_params.items()))
         if cache_key in self.cache:
             return self.cache[cache_key]
 
@@ -162,26 +163,26 @@ class Getter:
     async def run_flow(self, flow: APIFlow, start_params: Dict[str, str], callback: Callable):
         async with aiohttp.ClientSession() as session:
             node_mapping = {node.id: node for node in flow.nodes}
+            edge_mapping = {(edge.source, edge.target): edge for edge in flow.edges}
             results = {}
 
-            async def process_node(node: Node, params: Dict[str, str]) -> Dict[str, Any]:
+            async def process_node(node: Node, params: Dict[str, str], edge: Optional[Edge] = None) -> Dict[str, Any]:
                 response = {}
                 
                 if isinstance(node, APINode):  # If this is an APINode
                     # Fetch the response for this node using the provided params
                     response = await self.fetch(session, node, params)
                     output_data = response['output']
-                    # Use the node's linkage function to determine the parameters for subsequent calls
-                    linkage_params = node.linkage_function(output_data)
-                    if not linkage_params:
-                        return response  # No linkage means we're done for this branch
                     
                 elif isinstance(node, PythonNode):  # If this is a PythonNode
                     output_data = node.function(params)
-                    linkage_params = [{"result": output_data}]  # Wrap in a list for uniform processing
-                
+
                 else:
                     raise ValueError(f"Unknown node type: {type(node)}")
+
+                linkage_params = edge.linkage_function(output_data) if edge else output_data
+                if not linkage_params:
+                    return response  # No linkage means we're done for this branch
 
                 # The expected structure of linkage_params is a dictionary. However, for multiple subsequent calls,
                 # it can be a list of dictionaries. Convert a single dictionary into a list for uniformity.
@@ -191,10 +192,12 @@ class Getter:
                 combined_responses = {node.id: response}
 
                 # Process children nodes recursively
-                for end_params in linkage_params:
+                for out_params in linkage_params:
                     for child_node_id in flow.get_children(node.id):
+                        child_edge = edge_mapping.get((node.id, child_node_id))
                         child_node = flow.get_node(child_node_id)
-                        child_response = await process_node(child_node, end_params)
+                        in_params = child_edge.linkage_function(out_params) if child_edge.linkage_function else output_data
+                        child_response = await process_node(child_node, in_params)
                         
                         # Combine the response of the child node
                         combined_responses.update(child_response)

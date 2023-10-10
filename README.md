@@ -5,33 +5,34 @@
 A Python library using asyncio and aiohttp to build declarative API call flows. Designed for minimal repetition of definitions, modularity, and reusability, flowlib allows chaining of APIs, alongside formatting functions, in a directed acyclic graph. API definitions are defined as nodes of a graph, with their key elements (such as base URL, input and output parameters, and error handling) as attributes:
 
 ```python
-# Define the APIs as nodes, with a glue function formatting one output into the next input
-def xkcd_to_dictionary(outputs):
-    title = outputs.get("title")[0]
-    words = title.split()
-    first_word = words[0].lower() if words else ""
-    return {"word": first_word}
+# Define the APIs as nodes
 xkcd_node = apidag.APINode(
     id="xkcd_api",
     base_url="https://xkcd.com/{id}/info.0.json",
     input_params={"id": apidag.URLParam("id")},
     output_params={"title": "$.safe_title"},
-    error_handlers={404: lambda: {"title": ["No title found"]}},
-    linkage_function=xkcd_to_dictionary
+    error_handlers={404: lambda input: {"title": ["No title found"]}},
 )
+
 dictionary_node = apidag.APINode(
     id="dictionary_api",
     base_url="https://api.dictionaryapi.dev/api/v2/entries/en/{word}",
     input_params={"word": apidag.URLParam("word")},
     output_params={"definition": "$..meanings[*].definitions[*].definition"},
-    error_handlers={404: lambda: {"definition": ["No definition found"]}}
+    error_handlers={404: lambda input: {"definition": ["No definition found"]}}
 )
 ```
 
 The connections between APIs are defined as edges of the graph:
 ```python
 # Define edges
-edge = apidag.Edge(source="xkcd_api", target="dictionary_api")
+def xkcd_to_dictionary(outputs):
+    title = outputs.get("title")[0]
+    words = title.split()
+    first_word = words[0].lower() if words else ""
+    return {"word": first_word}
+
+edge = apidag.Edge(source="xkcd_api", target="dictionary_api", linkage_function=xkcd_to_dictionary)
 
 # Define the flow
 flow = apidag.APIFlow(nodes=[xkcd_node, dictionary_node], edges=[edge])
@@ -43,7 +44,7 @@ Finally, with the flow defined, it's relatively straightforward to define a gett
 def callback(results):
     comic_data = results.get("xkcd_api", {})
     dictionary_data = results.get("dictionary_api", {})
-    comic_title = comic_data['output'].get('title', "Unknown Title")
+    comic_title = comic_data['output'].get('title', ["Unknown Title"])[0]
     first_word = dictionary_data['input'].get('word', "Unknown Word")
     definitions = dictionary_data['output'].get('definition', [])
     if not isinstance(definitions, list):
